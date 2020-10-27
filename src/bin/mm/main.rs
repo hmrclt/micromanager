@@ -1,8 +1,8 @@
-extern crate rs_docker;
-
 use structopt::StructOpt;
+use serde::Serialize;
+use reqwest::{Error,Response};
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, StructOpt, Serialize)]
 enum Cmd {
     Start {
 	service_name: String
@@ -13,16 +13,27 @@ enum Cmd {
     Status 
 }
 
-fn main() {
-    let options: Cmd = Cmd::from_args();
+#[derive(Debug, StructOpt)]
+struct MMOpts {
+    #[structopt(subcommand)]
+    cmd: Cmd,    
+    #[structopt(default_value = "http://localhost:8881")]    
+    host: String
+}
+
+#[tokio::main]
+async fn main() -> Result<(), reqwest::Error> {
+    let options: MMOpts = MMOpts::from_args();
     println!("Hello cli!");
 
-    match options {
-	Cmd::Start {service_name} =>
-	    println!("starting service {}", service_name),
-	Cmd::Stop {service_name} =>
-	    println!("stopping service {}", service_name),
-	Cmd::Status =>
-	    println!("getting status"),
-    };
+    let client = reqwest::Client::new();
+    let payload = serde_json::to_string(&options.cmd).unwrap();
+    let res = client.post(&options.host)
+    	.body(payload)
+    	.send().await?;
+ 
+    let body = res.text().await?;
+    println!("Body:\n{}", body);
+ 
+    Ok(())
 }
