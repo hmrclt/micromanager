@@ -24,7 +24,10 @@ async fn cmd(state: web::Data<Mutex<ApplicationState>>, request: web::Json<Cmd>)
 		Ok(message)
 	    },
 	    Cmd::Stop{service_name} => {
-		let message = format!("Stop {}", service_name);
+		let mut state_l = state.lock().unwrap();
+		let index = state_l.running.iter().position(|x| *x == service_name).expect("no such service"); // TODO handle exception
+		state_l.running.remove(index);
+		let message = format!("Stop {} {:?}", service_name, state_l.running);
 		println!("{}", message);
 		Ok(message)
  	    },
