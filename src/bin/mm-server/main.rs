@@ -1,9 +1,14 @@
 use actix_web::{get, post, App, HttpResponse, Result, HttpServer, Responder, web};
 use micromanager::Cmd;
 use std::sync::Mutex;
+use std::process::{Command, Child};
+use std::collections::HashMap;
+
+use nix::unistd::Pid;
+use nix::sys::signal::{self, Signal};
 
 pub struct ApplicationState {
-    running: Vec<String>
+    running: HashMap<String, Child>
 }
 
 #[get("/")]
@@ -15,33 +20,45 @@ async fn hello() -> impl Responder {
 async fn cmd(state: web::Data<Mutex<ApplicationState>>, request: web::Json<Cmd>) -> Result<String> {
 
     match request {
-	web::Json(v) => match v {
-	    Cmd::Start{service_name} => {
-		let mut state_l = state.lock().unwrap();
-		state_l.running.push(service_name.clone());
-		let message = format!("Starting {} {:?}", service_name, state_l.running);
-		println!("{}", message);
+        web::Json(v) => match v {
+            Cmd::Start{service_name} => {
+                let mut state_l = state.lock().unwrap();
+
+		// TODO: Handle process already running
+		let new_process: Child = Command::new("grep").arg(&service_name).spawn().expect("oh no!");
+                state_l.running.insert(service_name.clone(), new_process);
+                let message = format!("Starting {} {:?}", service_name, state_l.running);
+                println!("{}", message);
+                Ok(message)
+            },
+            Cmd::Stop{service_name} => {
+                let mut state_l = state.lock().unwrap();
+		match state_l.running.get(&service_name) {
+		    Some(child) => {
+			let pid = Pid::from_raw(child.id() as i32);
+			signal::kill(pid, Signal::SIGTERM).expect("unable to kill");
+			state_l.running.remove(&service_name);
+			Ok(format!("Shutting down {}", service_name))
+		    },
+		    None => Ok("Process not found".to_string())
+		}
+            },
+            Cmd::Status => {
+		let state_l = state.lock().unwrap();
+                let message = format!("Running {:?}", state_l.running);		
 		Ok(message)
-	    },
-	    Cmd::Stop{service_name} => {
-		let mut state_l = state.lock().unwrap();
-		let index = state_l.running.iter().position(|x| *x == service_name).expect("no such service"); // TODO handle exception
-		state_l.running.remove(index);
-		let message = format!("Stop {} {:?}", service_name, state_l.running);
-		println!("{}", message);
-		Ok(message)
- 	    },
-	    Cmd::Status => Ok(format!("Status"))
-	}
+	    }
+        }
     }
 }
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    let state = web::Data::new(Mutex::new(ApplicationState{running: Vec::new()}));
+    let state = web::Data::new(Mutex::new(ApplicationState{running: HashMap::new()}));
+
     HttpServer::new(move || {
         App::new()
-	    .app_data(state.clone())
+            .app_data(state.clone())
             .service(hello).service(cmd)
     })
     .bind("127.0.0.1:8881")?
