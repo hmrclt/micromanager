@@ -7,6 +7,7 @@ use std::sync::Mutex;
 use nix::sys::signal::{self, Signal};
 use nix::sys::wait::waitpid;
 use nix::unistd::Pid;
+use std::{env, fs};
 
 pub struct ApplicationState {
     running: HashMap<String, Child>,
@@ -70,6 +71,15 @@ async fn main() -> std::io::Result<()> {
     let state = web::Data::new(Mutex::new(ApplicationState {
         running: HashMap::new(),
     }));
+
+    let sm_workspace = env::var("WORKSPACE").expect("WORKSPACE is undefined");
+
+    let config = fs::read_to_string(format!(
+        "{}/service-manager-config/services.json",
+        sm_workspace
+    ))?;
+
+    println!("{}", config);
 
     HttpServer::new(move || {
         App::new()
