@@ -1,5 +1,5 @@
 use actix_web::{get, post, web, App, HttpResponse, HttpServer, Responder, Result};
-use micromanager::Cmd;
+use micromanager::{Cmd, ServiceManagerConfig};
 use std::collections::HashMap;
 use std::process::{Child, Command};
 use std::sync::Mutex;
@@ -25,9 +25,16 @@ async fn cmd(state: web::Data<Mutex<ApplicationState>>, request: web::Json<Cmd>)
             Cmd::Start { service_name } => {
                 let mut state_l = state.lock().unwrap();
 
+		let version = "0.9.0";
+		let artifact_name = format!("uk.gov.hmrc::{}:{}", service_name, version);
+		
                 // TODO: Handle process already running
-                let new_process: Child = Command::new("grep")
-                    .arg(&service_name)
+                let new_process: Child = Command::new("coursier")
+                    .arg("launch")
+                    .arg("--java-opt").arg("-Dhttp.port=9876")
+		    .arg("--fork=false") // if set port is ignored, if not set can't shut down process
+                    .arg("-r").arg("https://artefacts.tax.service.gov.uk/artifactory/hmrc-releases/")
+                    .arg(&artifact_name)
                     .spawn()
                     .expect("oh no!");
                 let pid = new_process.id();
@@ -74,12 +81,14 @@ async fn main() -> std::io::Result<()> {
 
     let sm_workspace = env::var("WORKSPACE").expect("WORKSPACE is undefined");
 
-    let config = fs::read_to_string(format!(
+    let config: String = fs::read_to_string(format!(
         "{}/service-manager-config/services.json",
         sm_workspace
     ))?;
 
-    println!("{}", config);
+    let config: HashMap<String, ServiceManagerConfig> = serde_json::from_str(&config).unwrap();
+    
+    println!("{:?}", config);
 
     HttpServer::new(move || {
         App::new()
