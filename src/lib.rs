@@ -28,3 +28,12 @@ pub struct ServiceManagerConfig {
     sources: Option<ServiceManagerSources>,
     binary: Option<ServiceManagerBinary>
 }
+
+
+#[derive(Debug, Deserialize)]
+pub struct ServerConfig {
+    pub host: String,
+    pub port: u16,
+    pub auto_connect: bool,
+    pub image_name: String
+}

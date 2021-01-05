@@ -1,5 +1,5 @@
 use actix_web::{get, post, web, App, HttpResponse, HttpServer, Responder, Result};
-use micromanager::{Cmd, ServiceManagerConfig};
+use micromanager::{Cmd, ServerConfig};
 use std::collections::HashMap;
 use std::process::{Child, Command};
 use std::sync::Mutex;
@@ -7,10 +7,14 @@ use std::sync::Mutex;
 use nix::sys::signal::{self, Signal};
 use nix::sys::wait::waitpid;
 use nix::unistd::Pid;
-use std::{env, fs};
+use bollard::Docker;
+use bollard::container::{CreateContainerOptions, Config};
+use hocon::HoconLoader;
 
 pub struct ApplicationState {
     running: HashMap<String, Child>,
+    db: sqlite::Connection,
+    docker: Docker
 }
 
 #[get("/")]
@@ -25,16 +29,26 @@ async fn cmd(state: web::Data<Mutex<ApplicationState>>, request: web::Json<Cmd>)
             Cmd::Start { service_name } => {
                 let mut state_l = state.lock().unwrap();
 
-		let version = "0.9.0";
-		let artifact_name = format!("uk.gov.hmrc::{}:{}", service_name, version);
+		let artifact_name = format!("uk.gov.hmrc::{}", service_name); // assuming service_name is {service}:{version}
 		
-                // TODO: Handle process already running
-                let new_process: Child = Command::new("coursier")
-                    .arg("launch")
-                    .arg("--java-opt").arg("-Dhttp.port=9876")
-		    .arg("--fork=false") // if set port is ignored, if not set can't shut down process
-                    .arg("-r").arg("https://artefacts.tax.service.gov.uk/artifactory/hmrc-releases/")
-                    .arg(&artifact_name)
+		let coursier_out = Command::new("coursier")
+		    .arg("fetch")
+		    .arg("-r").arg("https://artefacts.tax.service.gov.uk/artifactory/hmrc-releases/")
+		    .arg(&artifact_name)
+		    .output()
+		    .expect("Unable to run coursier");
+		
+		let stdout = coursier_out.stdout;
+		let stdout_string = String::from_utf8(stdout).unwrap();
+		let lines: Vec<&str> = stdout_string.lines().collect();
+		let jars = lines.join(":");
+
+		// TODO: Handle process already running		
+                let new_process: Child = Command::new("java")
+		    .arg("-Dhttp.port=9876")
+                    .arg("-cp")		    
+                    .arg(jars)
+		    .arg("play.core.server.ProdServerStart")
                     .spawn()
                     .expect("oh no!");
                 let pid = new_process.id();
@@ -75,28 +89,54 @@ async fn cmd(state: web::Data<Mutex<ApplicationState>>, request: web::Json<Cmd>)
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
+    
+    let connection = sqlite::open(":memory:").expect("Unable to connect to database");
+    
+    let docker = Docker::connect_with_local_defaults().expect("unable to connect to docker");
+    // let version = docker.version().await.expect("unable to get docker version");
+    // println!("Docker version: {:?}", version);
+
+
+    let options = Some(CreateContainerOptions{
+	name: "my-new-container",
+    });
+
+    let config = Config {
+	image: Some("debian"),
+	cmd: Some(vec!["md5sum"]),
+	..Default::default()
+    };
+
+    docker.create_container(options, config).await.unwrap();
+    docker.remove_container("my-new-container", None).await.unwrap();
+    
+    let config: ServerConfig = HoconLoader::new()
+        .load_file("micro-manager.conf").expect("Unable to access config file at micro-manager.conf")
+        .resolve().unwrap();
+    
     let state = web::Data::new(Mutex::new(ApplicationState {
         running: HashMap::new(),
+	db: connection,
+	docker
     }));
 
-    let sm_workspace = env::var("WORKSPACE").expect("WORKSPACE is undefined");
+    // let sm_workspace = env::var("WORKSPACE").expect("WORKSPACE is undefined");
 
-    let config: String = fs::read_to_string(format!(
-        "{}/service-manager-config/services.json",
-        sm_workspace
-    ))?;
+    // let config: String = fs::read_to_string(format!(
+    //     "{}/service-manager-config/services.json",
+    //     sm_workspace
+    // ))?;
 
-    let config: HashMap<String, ServiceManagerConfig> = serde_json::from_str(&config).unwrap();
-    
-    println!("{:?}", config);
+    // let config: HashMap<String, ServiceManagerConfig> = serde_json::from_str(&config).unwrap();
 
-    HttpServer::new(move || {
+    let address = format!("{}:{}", config.host, config.port);
+    let http = HttpServer::new(move || {
         App::new()
             .app_data(state.clone())
             .service(hello)
             .service(cmd)
     })
-    .bind("127.0.0.1:8881")?
-    .run()
-    .await
+    .bind(&address)?.run();
+    println!("Listening on {}", address);
+    http.await
 }
